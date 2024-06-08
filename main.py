@@ -8,8 +8,9 @@ import nltk
 import requests
 import torch
 from bs4 import BeautifulSoup
+from haystack.nodes.retriever.multimodal import MultiModalRetriever
 from haystack.document_stores import ElasticsearchDocumentStore
-from haystack.nodes import ElasticsearchRetriever, FARMReader
+from haystack.nodes import FARMReader
 from haystack.pipelines import ExtractiveQAPipeline
 from haystack.schema import Document
 from nltk.corpus import stopwords
@@ -23,6 +24,10 @@ from sentence_transformers import SentenceTransformer
 from tqdm import tqdm
 from urllib3.util.retry import Retry
 from webdriver_manager.chrome import ChromeDriverManager
+from collections import deque
+from typing import Set, List
+from urllib.parse import urljoin
+from PIL import Image
 
 # Setup logging
 logging.basicConfig(format='%(asctime)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -128,11 +133,6 @@ def process_web_data(data: List[str], model_name: str, dataset_name: str, use_gp
             continue
 
     return documents
-
-import re
-from collections import deque
-from typing import Set, List
-from urllib.parse import urljoin
 
 class WebsiteGraph:
     def __init__(self):
@@ -274,16 +274,30 @@ def main() -> None:
         all_paragraphs.extend(scraped_data['paragraphs'])
 
     logging.info(f"Starting data preprocessing and indexing")
-    index_web_data(document_store, all_paragraphs, batch_size=128, model=model, dataset_name=args['dataset_name'], use_gpu=args['use_gpu'])
+    index_web_data(document_store, all_paragraphs, batch_size=128, model_name=args['model_name'], dataset_name=args['dataset_name'], use_gpu=args['use_gpu'])
 
-    # Initialize ElasticsearchRetriever
-    retriever = ElasticsearchRetriever(document_store=document_store)
+    # Initialize MultiModalRetriever
+    retriever_text_to_image = MultiModalRetriever(
+        document_store=document_store,
+        query_embedding_model="sentence-transformers/all-mpnet-base-v2",
+        document_embedding_models={
+            "text": "sentence-transformers/all-mpnet-base-v2",
+            "table": "sentence-transformers/msmarco-roberta-base-v3",
+            "image": "sentence-transformers/clip-ViT-B-32"
+        },
+        query_type="text",
+        embed_meta_fields=["content", "meta.title", "meta.url", "meta.scrape_date", "meta.version", "meta.content_hash"],
+        top_k=25,
+        batch_size=16,
+        similarity_function="dot_product",
+        progress_bar=True
+    )
 
     # Initialize Reader
     reader = FARMReader(model_name_or_path="deepset/roberta-base-squad2")
 
     # Initialize Pipeline
-    pipeline = ExtractiveQAPipeline(reader=reader, retriever=retriever)
+    pipeline = ExtractiveQAPipeline(reader=reader, retriever=retriever_text_to_image)
 
     # Interactive Querying
     while True:
